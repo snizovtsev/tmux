@@ -3202,6 +3202,7 @@ struct window	*window_find_by_id(u_int);
 void		 window_update_activity(struct window *);
 struct window	*window_create(u_int, u_int, u_int, u_int);
 void		 window_pane_set_event(struct window_pane *);
+void		 window_pane_set_event_nofd(struct window_pane *wp, struct bufferevent *bev);
 struct window_pane *window_get_active_at(struct window *, u_int, u_int);
 struct window_pane *window_find_string(struct window *, const char *);
 int		 window_has_pane(struct window *, struct window_pane *);
@@ -3438,6 +3439,10 @@ void	control_notify_session_closed(struct session *);
 void	control_notify_session_window_changed(struct session *);
 void	control_notify_paste_buffer_changed(const char *);
 void	control_notify_paste_buffer_deleted(const char *);
+
+/* remote.c */
+struct remote *remote_create(struct bufferevent *bev);
+void remote_destroy(struct remote *r);
 
 /* session.c */
 extern struct sessions sessions;
