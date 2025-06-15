@@ -113,6 +113,7 @@ struct input_ctx {
 	int			flags;
 #define INPUT_DISCARD 0x1
 #define INPUT_LAST 0x2
+#define INPUT_REMOTE 0x4
 
 	const struct input_state *state;
 
@@ -156,6 +157,9 @@ static void	input_enter_apc(struct input_ctx *);
 static void	input_exit_apc(struct input_ctx *);
 static void	input_enter_rename(struct input_ctx *);
 static void	input_exit_rename(struct input_ctx *);
+static void 	input_exit_dcs_prefix(struct input_ctx *);
+static void 	input_enter_remote(struct input_ctx *);
+static void 	input_exit_remote(struct input_ctx *);
 
 /* Input state handlers. */
 static int	input_print(struct input_ctx *);
@@ -350,6 +354,7 @@ static const struct input_transition input_state_csi_ignore_table[];
 static const struct input_transition input_state_dcs_enter_table[];
 static const struct input_transition input_state_dcs_parameter_table[];
 static const struct input_transition input_state_dcs_intermediate_table[];
+static const struct input_transition input_state_dcs_prefix_table[];
 static const struct input_transition input_state_dcs_handler_table[];
 static const struct input_transition input_state_dcs_escape_table[];
 static const struct input_transition input_state_dcs_ignore_table[];
@@ -426,6 +431,13 @@ static const struct input_state input_state_dcs_intermediate = {
 	"dcs_intermediate",
 	NULL, NULL,
 	input_state_dcs_intermediate_table
+};
+
+/* dcs_start state definition. */
+static const struct input_state input_state_dcs_prefix = {
+	"dcs_prefix",
+	NULL, input_exit_dcs_prefix,
+	input_state_dcs_prefix_table
 };
 
 /* dcs_handler state definition. */
@@ -627,7 +639,9 @@ static const struct input_transition input_state_dcs_parameter_table[] = {
 	{ 0x3a, 0x3a, NULL,		  &input_state_dcs_ignore },
 	{ 0x3b, 0x3b, input_parameter,	  NULL },
 	{ 0x3c, 0x3f, NULL,		  &input_state_dcs_ignore },
-	{ 0x40, 0x7e, input_input,	  &input_state_dcs_handler },
+	{ 0x40, 0x6f, input_input,	  &input_state_dcs_handler },
+	{ 0x70, 0x70, input_input,	  &input_state_dcs_prefix },
+	{ 0x71, 0x7e, input_input,	  &input_state_dcs_handler },
 	{ 0x7f, 0xff, NULL,		  NULL },
 
 	{ -1, -1, NULL, NULL }
@@ -644,6 +658,17 @@ static const struct input_transition input_state_dcs_intermediate_table[] = {
 	{ 0x30, 0x3f, NULL,		  &input_state_dcs_ignore },
 	{ 0x40, 0x7e, input_input,	  &input_state_dcs_handler },
 	{ 0x7f, 0xff, NULL,		  NULL },
+
+	{ -1, -1, NULL, NULL }
+};
+
+/* dcs_prefix state table. */
+static const struct input_transition input_state_dcs_prefix_table[] = {
+	/* No INPUT_STATE_ANYWHERE */
+
+	{ 0x00, 0x1a, input_input,  &input_state_dcs_handler },
+	{ 0x1b, 0x1b, NULL,	    &input_state_dcs_escape },
+	{ 0x1c, 0xff, input_input,  &input_state_dcs_handler },
 
 	{ -1, -1, NULL, NULL }
 };
@@ -854,6 +879,9 @@ void
 input_free(struct input_ctx *ictx)
 {
 	u_int	i;
+
+	if (ictx->flags & INPUT_REMOTE)
+		input_exit_remote(ictx);
 
 	for (i = 0; i < ictx->param_list_len; i++) {
 		if (ictx->param_list[i].type == INPUT_STRING)
@@ -1139,6 +1167,9 @@ input_clear(struct input_ctx *ictx)
 	ictx->input_end = INPUT_END_ST;
 
 	ictx->flags &= ~INPUT_DISCARD;
+
+	if (ictx->flags & INPUT_REMOTE)
+		input_exit_remote(ictx);
 }
 
 /* Reset for ground state. */
@@ -1207,11 +1238,23 @@ input_parameter(struct input_ctx *ictx)
 	return (0);
 }
 
+/* Check for control mode sequence. */
+static void
+input_exit_dcs_prefix(struct input_ctx *ictx)
+{
+	if (strcmp(ictx->param_buf, "1000") == 0 &&
+	    strncmp(ictx->input_buf, "p", 1) == 0)
+		input_enter_remote(ictx);
+}
+
 /* Collect input string. */
 static int
 input_input(struct input_ctx *ictx)
 {
 	size_t available;
+
+	if (ictx->flags & INPUT_DISCARD)
+		return (0);
 
 	available = ictx->input_space;
 	while (ictx->input_len + 1 >= available) {
@@ -2498,6 +2541,11 @@ input_dcs_dispatch(struct input_ctx *ictx)
 		return (0);
 	oo = wp->options;
 
+        if (ictx->flags & INPUT_REMOTE) {
+		input_exit_remote(ictx);
+		return (0);
+        }
+
 	if (ictx->flags & INPUT_DISCARD) {
 		log_debug("%s: %zu bytes (discard)", __func__, len);
 		return (0);
@@ -2541,6 +2589,32 @@ input_dcs_dispatch(struct input_ctx *ictx)
 	}
 
 	return (0);
+}
+
+static void
+input_enter_remote(struct input_ctx *ictx)
+{
+	struct window_pane *wp = ictx->wp;
+
+	log_debug("%s", __func__);
+
+	ictx->flags |= INPUT_DISCARD;
+	event_del(&ictx->timer);
+	evbuffer_drain(ictx->since_ground, EV_SIZE_MAX);
+
+	if (wp != NULL && window_pane_start_remote(wp) == 0)
+		ictx->flags |= INPUT_REMOTE;
+}
+
+static void
+input_exit_remote(struct input_ctx *ictx)
+{
+	struct window_pane *wp = ictx->wp;
+
+	log_debug("%s", __func__);
+
+	ictx->flags &= ~INPUT_REMOTE;
+	window_pane_stop_remote(wp);
 }
 
 /* OSC string started. */

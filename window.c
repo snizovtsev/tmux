@@ -1017,6 +1017,21 @@ window_pane_destroy(struct window_pane *wp)
 }
 
 static void
+window_pane_write_remote(struct window_pane *wp)
+{
+	struct bufferevent *event = wp->remote_event;
+	struct evbuffer	   *data = input_pending(wp->ictx);
+	size_t		    size = EVBUFFER_LENGTH(data);
+
+	if (size == 0)
+		return;
+
+	log_debug("%%%u has %zu control mode bytes", wp->id, size);
+	bufferevent_write_buffer(event, data);
+	bufferevent_flush(event, EV_WRITE, BEV_FLUSH);
+}
+
+static void
 window_pane_read_callback(__unused struct bufferevent *bufev, void *data)
 {
 	struct window_pane		*wp = data;
@@ -1036,12 +1051,69 @@ window_pane_read_callback(__unused struct bufferevent *bufev, void *data)
 	}
 
 	log_debug("%%%u has %zu bytes", wp->id, size);
+
+	input_parse_pane(wp);
+	bufferevent_disable(wp->event, EV_READ);
+
+	if (wp->remote_event != NULL)
+		window_pane_write_remote(wp);
+
 	TAILQ_FOREACH(c, &clients, entry) {
 		if (c->session != NULL && (c->flags & CLIENT_CONTROL))
 			control_write_output(c, wp);
 	}
-	input_parse_pane(wp);
-	bufferevent_disable(wp->event, EV_READ);
+}
+
+static void
+window_pane_remote_reply(struct bufferevent *bev, void *data)
+{
+	struct window_pane *wp = data;
+
+	bufferevent_read_buffer(bev, bufferevent_get_output(wp->event));
+}
+
+int
+window_pane_start_remote(struct window_pane *wp)
+{
+	struct event_base    *base = bufferevent_get_base(wp->event);
+	struct bufferevent   *pipe[2];
+	struct remote	     *r;
+
+	log_debug("%s: %%%u", __func__, wp->id);
+
+	if (!options_get_number(wp->options, "allow-remote"))
+		return (1);
+
+	if (wp->remote_event != NULL)
+		window_pane_stop_remote(wp);
+
+	if (bufferevent_pair_new(base, 0, pipe) != 0)
+		return (1);
+
+	if ((r = remote_create(pipe[0])) == NULL) {
+		bufferevent_free(pipe[0]);
+		bufferevent_free(pipe[1]);
+		return (1);
+	}
+
+	wp->remote_event = pipe[1];
+	bufferevent_setcb(
+	    wp->remote_event, window_pane_remote_reply, NULL, NULL, wp);
+	bufferevent_enable(wp->remote_event, EV_READ);
+
+	remote_set_pane(r, wp, 0);
+	return (0);
+}
+
+void
+window_pane_stop_remote(struct window_pane *wp)
+{
+	log_debug("%s: %%%u", __func__, wp->id);
+
+	window_pane_write_remote(wp);
+	bufferevent_flush(wp->remote_event, EV_WRITE, BEV_FINISHED);
+	bufferevent_free(wp->remote_event);
+	wp->remote_event = NULL;
 }
 
 static void
@@ -1052,6 +1124,9 @@ window_pane_error_callback(__unused struct bufferevent *bufev,
 
 	log_debug("%%%u error", wp->id);
 	wp->flags |= PANE_EXITED;
+
+	if (wp->remote_event != NULL)
+		window_pane_stop_remote(wp);
 
 	if (window_pane_destroy_ready(wp))
 		server_destroy_pane(wp, 1);
@@ -1067,6 +1142,18 @@ window_pane_set_event(struct window_pane *wp)
 	if (wp->event == NULL)
 		fatalx("out of memory");
 	wp->ictx = input_init(wp, wp->event->output, &wp->palette);
+
+	bufferevent_enable(wp->event, EV_READ|EV_WRITE);
+}
+
+void
+window_pane_set_event_nofd(struct window_pane *wp, struct bufferevent *bev)
+{
+	wp->event = bev;
+	bufferevent_setcb(bev, window_pane_read_callback,
+	    NULL, window_pane_error_callback, wp);
+	wp->ictx = input_init(wp, wp->event->output, &wp->palette);
+	wp->fd = 1; /* HACK: pretend to be alive */
 
 	bufferevent_enable(wp->event, EV_READ|EV_WRITE);
 }
@@ -1772,6 +1859,8 @@ window_pane_mode(struct window_pane *wp)
 			return (WINDOW_PANE_COPY_MODE);
 		if (TAILQ_FIRST(&wp->modes)->mode == &window_view_mode)
 			return (WINDOW_PANE_VIEW_MODE);
+		if (TAILQ_FIRST(&wp->modes)->mode == &window_remote_mode)
+			return (WINDOW_PANE_REMOTE_MODE);
 	}
 	return (WINDOW_PANE_NO_MODE);
 }

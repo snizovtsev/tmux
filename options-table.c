@@ -229,6 +229,17 @@ static const char *options_table_status_format_default[] = {
 	NULL
 };
 
+/* Remote dashboard format. */
+#define OPTIONS_TABLE_REMOTE_DASHBOARD_FORMAT1 \
+	"#[align=centre] ** tmux control mode ** "
+#define OPTIONS_TABLE_REMOTE_DASHBOARD_FORMAT2 \
+	"status: #{remote_format_test}"
+static const char *options_table_remote_dashboard_format_default[] = {
+	OPTIONS_TABLE_REMOTE_DASHBOARD_FORMAT1,
+	OPTIONS_TABLE_REMOTE_DASHBOARD_FORMAT2,
+	NULL
+};
+
 /* Helpers for hook options. */
 #define OPTIONS_TABLE_HOOK(hook_name, default_value) \
 	{ .name = hook_name, \
@@ -825,6 +836,15 @@ const struct options_table_entry options_table[] = {
 		  "as 'status-left'."
 	},
 
+	{ .name = "remote-dashboard-format",
+	  .type = OPTIONS_TABLE_STRING,
+	  .scope = OPTIONS_TABLE_WINDOW|OPTIONS_TABLE_PANE,
+	  .flags = OPTIONS_TABLE_IS_ARRAY,
+	  .default_arr = options_table_remote_dashboard_format_default,
+	  .text = "Formats for the remote client dashboard. "
+		  "Each array member is the format for one status line. "
+	},
+
 	{ .name = "status-interval",
 	  .type = OPTIONS_TABLE_NUMBER,
 	  .scope = OPTIONS_TABLE_SESSION,
@@ -1058,6 +1078,14 @@ const struct options_table_entry options_table[] = {
 	  .default_num = 1,
 	  .text = "Whether applications are allowed to use the escape sequence "
 		  "to set the pane title."
+	},
+
+	{ .name = "allow-remote",
+	  .type = OPTIONS_TABLE_FLAG,
+	  .scope = OPTIONS_TABLE_WINDOW|OPTIONS_TABLE_PANE,
+	  .default_num = 1,
+	  .text = "Whether applications are allowed to spawn remote sessions using "
+	  	  "control mode protocol."
 	},
 
 	{ .name = "alternate-screen",

@@ -193,6 +193,7 @@ cmd_find_best_session_with_window(struct cmd_find_state *fs)
 	fs->s = cmd_find_best_session(slist, ssize, fs->flags);
 	if (fs->s == NULL)
 		goto fail;
+	fs->r = fs->s->remote; /* HACK */
 	free(slist);
 	return (cmd_find_best_winlink_with_window(fs));
 
@@ -693,6 +694,7 @@ cmd_find_copy_state(struct cmd_find_state *dst, struct cmd_find_state *src)
 	dst->idx = src->idx;
 	dst->w = src->w;
 	dst->wp = src->wp;
+	dst->r = src->r;
 }
 
 /* Log the result. */
@@ -716,6 +718,7 @@ cmd_find_log_state(const char *prefix, struct cmd_find_state *fs)
 		log_debug("%s: idx=%d", prefix, fs->idx);
 	else
 		log_debug("%s: idx=none", prefix);
+	// TODO: remote
 }
 
 /* Find state from a session. */

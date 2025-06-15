@@ -110,6 +110,7 @@ struct winlink;
 
 /* Attribute to make GCC check printf-like arguments. */
 #define printflike(a, b) __attribute__ ((format (printf, a, b)))
+#define scanflike(a, b) __attribute__ ((format (scanf, a, b)))
 
 /* Number of items in array. */
 #ifndef nitems
@@ -1039,6 +1040,7 @@ enum pane_lines {
 #define WINDOW_PANE_NO_MODE 0
 #define WINDOW_PANE_COPY_MODE 1
 #define WINDOW_PANE_VIEW_MODE 2
+#define WINDOW_PANE_REMOTE_MODE 3
 
 /* Screen redraw context. */
 struct screen_redraw_ctx {
@@ -1206,6 +1208,7 @@ struct window_pane {
 	int		 pipe_fd;
 	struct bufferevent *pipe_event;
 	struct window_pane_offset pipe_offset;
+	struct bufferevent *remote_event;
 
 	struct screen	*screen;
 	struct screen	 base;
@@ -1399,6 +1402,7 @@ struct session {
 
 	struct event	 lock_timer;
 
+	struct remote 	*remote;
 	struct winlink	*curw;
 	struct winlink_stack lastw;
 	struct winlinks	 windows;
@@ -1722,6 +1726,7 @@ struct cmd_find_state {
 	struct winlink		*wl;
 	struct window		*w;
 	struct window_pane	*wp;
+	struct remote		*r;
 	int			 idx;
 };
 
@@ -1918,7 +1923,6 @@ struct client {
 	pid_t			 pid;
 	int			 fd;
 	int			 out_fd;
-	struct event		 event;
 	int			 retval;
 
 	struct timeval		 creation_time;
@@ -3213,6 +3217,7 @@ struct window	*window_find_by_id(u_int);
 void		 window_update_activity(struct window *);
 struct window	*window_create(u_int, u_int, u_int, u_int);
 void		 window_pane_set_event(struct window_pane *);
+void		 window_pane_set_event_nofd(struct window_pane *wp, struct bufferevent *bev);
 struct window_pane *window_get_active_at(struct window *, u_int, u_int);
 struct window_pane *window_find_string(struct window *, const char *);
 int		 window_has_pane(struct window *, struct window_pane *);
@@ -3274,6 +3279,8 @@ void		 winlink_clear_flags(struct winlink *);
 int		 winlink_shuffle_up(struct session *, struct winlink *, int);
 int		 window_pane_start_input(struct window_pane *,
 		     struct cmdq_item *, char **);
+int		 window_pane_start_remote(struct window_pane *);
+void		 window_pane_stop_remote(struct window_pane *);
 void		*window_pane_get_new_data(struct window_pane *,
 		     struct window_pane_offset *, size_t *);
 void		 window_pane_update_used_data(struct window_pane *,
@@ -3390,6 +3397,13 @@ extern const char window_clock_table[14][5][5];
 /* window-client.c */
 extern const struct window_mode window_client_mode;
 
+/* window-remote.c */
+extern const struct window_mode window_remote_mode;
+void printflike(3, 4) window_remote_add(struct window_pane *, int, const char *,
+		     ...);
+void printflike(3, 0) window_remote_vadd(struct window_pane *, int, const char *,
+		     va_list);
+
 /* window-copy.c */
 extern const struct window_mode window_copy_mode;
 extern const struct window_mode window_view_mode;
@@ -3450,6 +3464,17 @@ void	control_notify_session_window_changed(struct session *);
 void	control_notify_paste_buffer_changed(const char *);
 void	control_notify_paste_buffer_deleted(const char *);
 
+/* remote.c */
+RB_HEAD(remotes, remote);
+extern struct remotes remotes;
+struct remote *remote_find_by_id(u_int id);
+struct remote *remote_create(struct bufferevent *bev);
+void remote_set_pane(struct remote *, struct window_pane *, int);
+void remote_destroy(struct remote *r);
+void remote_notify_window_pane_changed(struct remote *, struct window *);
+void remote_notify_window_layout_changed(struct remote *, struct window *);
+void remote_notify_session_window_changed(struct remote *);
+
 /* session.c */
 extern struct sessions sessions;
 extern struct session_groups session_groups;
@@ -3481,6 +3506,7 @@ int		 session_previous(struct session *, int);
 int		 session_select(struct session *, int);
 int		 session_last(struct session *);
 int		 session_set_current(struct session *, struct winlink *);
+int		 session_sync_current(struct session *, struct winlink *);
 struct session_group *session_group_contains(struct session *);
 struct session_group *session_group_find(const char *);
 struct session_group *session_group_new(const char *);
