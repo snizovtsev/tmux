@@ -1071,6 +1071,17 @@ window_pane_set_event(struct window_pane *wp)
 }
 
 void
+window_pane_set_event_nofd(struct window_pane *wp, struct bufferevent *bev)
+{
+	wp->event = bev;
+	bufferevent_setcb(bev, window_pane_read_callback,
+	    NULL, window_pane_error_callback, wp);
+	wp->ictx = input_init(wp, wp->event, &wp->palette);
+
+	bufferevent_enable(wp->event, EV_READ|EV_WRITE);
+}
+
+void
 window_pane_resize(struct window_pane *wp, u_int sx, u_int sy)
 {
 	struct window_mode_entry	*wme;

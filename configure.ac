@@ -462,6 +462,16 @@ if test "x$enable_sixel" = xyes; then
 fi
 AM_CONDITIONAL(ENABLE_SIXEL, [test "x$enable_sixel" = xyes])
 
+# Enable remote session support.
+AC_ARG_ENABLE(
+	remote,
+	AS_HELP_STRING(--enable-remote, enable remote (control mode) client)
+)
+if test "x$enable_remote" = xyes; then
+	AC_DEFINE(ENABLE_REMOTE)
+fi
+AM_CONDITIONAL(ENABLE_REMOTE, [test "x$enable_remote" = xyes])
+
 # Check for b64_ntop. If we have b64_ntop, we assume b64_pton as well.
 AC_MSG_CHECKING(for b64_ntop)
 AC_LINK_IFELSE([AC_LANG_PROGRAM(

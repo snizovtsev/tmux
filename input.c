@@ -78,6 +78,9 @@ struct input_ctx {
 	struct bufferevent     *event;
 	struct screen_write_ctx ctx;
 	struct colour_palette  *palette;
+#ifdef ENABLE_REMOTE
+	struct remote	       *remote;
+#endif
 
 	struct input_cell	cell;
 
@@ -93,6 +96,7 @@ struct input_ctx {
 	size_t			param_len;
 
 #define INPUT_BUF_START 32
+	struct bufferevent     *input_event;
 	u_char		       *input_buf;
 	size_t			input_len;
 	size_t			input_space;
@@ -112,7 +116,8 @@ struct input_ctx {
 
 	int			flags;
 #define INPUT_DISCARD 0x1
-#define INPUT_LAST 0x2
+#define INPUT_REMOTE 0x2
+#define INPUT_LAST 0x4
 
 	const struct input_state *state;
 
@@ -156,6 +161,11 @@ static void	input_enter_apc(struct input_ctx *);
 static void	input_exit_apc(struct input_ctx *);
 static void	input_enter_rename(struct input_ctx *);
 static void	input_exit_rename(struct input_ctx *);
+static void 	input_enter_dcs_handler(struct input_ctx *);
+#ifdef ENABLE_REMOTE
+static void 	input_enter_remote(struct input_ctx *);
+static void 	input_exit_remote(struct input_ctx *);
+#endif
 
 /* Input state handlers. */
 static int	input_print(struct input_ctx *);
@@ -431,7 +441,7 @@ static const struct input_state input_state_dcs_intermediate = {
 /* dcs_handler state definition. */
 static const struct input_state input_state_dcs_handler = {
 	"dcs_handler",
-	NULL, NULL,
+	input_enter_dcs_handler, NULL,
 	input_state_dcs_handler_table
 };
 
@@ -950,8 +960,12 @@ input_parse(struct input_ctx *ictx, u_char *buf, size_t len)
 			input_set_state(ictx, itr);
 
 		/* If not in ground state, save input. */
-		if (ictx->state != &input_state_ground)
+		if (ictx->state != &input_state_ground && ~ictx->flags & INPUT_REMOTE)
 			evbuffer_add(ictx->since_ground, &ictx->ch, 1);
+	}
+
+	if (ictx->input_event) {
+		bufferevent_flush(ictx->input_event, EV_WRITE, BEV_FLUSH);
 	}
 }
 
@@ -1190,11 +1204,31 @@ input_parameter(struct input_ctx *ictx)
 	return (0);
 }
 
+/* Check for control mode sequence. */
+static void
+input_enter_dcs_handler(struct input_ctx *ictx)
+{
+#ifdef ENABLE_REMOTE
+	char *s;
+
+	/* Check for control mode sequence */
+	s = ictx->param_buf;
+        if (ictx->ch == 'p' && strcmp(s, "1000") == 0) {
+		input_enter_remote(ictx);
+        }
+#endif
+}
+
 /* Collect input string. */
 static int
 input_input(struct input_ctx *ictx)
 {
 	size_t available;
+
+        if (ictx->input_event) {
+		bufferevent_write(ictx->input_event, &ictx->ch, 1);
+		return (0);
+        }
 
 	available = ictx->input_space;
 	while (ictx->input_len + 1 >= available) {
@@ -2377,6 +2411,13 @@ input_dcs_dispatch(struct input_ctx *ictx)
 	if (wp == NULL)
 		return (0);
 
+#ifdef ENABLE_REMOTE
+        if (ictx->flags & INPUT_REMOTE) {
+		input_exit_remote(ictx);
+		return (0);
+        }
+#endif
+
 	if (ictx->flags & INPUT_DISCARD) {
 		log_debug("%s: %zu bytes (discard)", __func__, len);
 		return (0);
@@ -2408,6 +2449,49 @@ input_dcs_dispatch(struct input_ctx *ictx)
 
 	return (0);
 }
+
+#ifdef ENABLE_REMOTE
+static void
+input_reply_proxy(struct bufferevent *bev, void *ctx)
+{
+	struct input_ctx *ictx = ctx;
+
+	bufferevent_read_buffer(bev, bufferevent_get_output(ictx->event));
+}
+
+static void
+input_enter_remote(struct input_ctx *ictx)
+{
+	struct bufferevent *pipe[2];
+
+	if (bufferevent_pair_new(NULL, 0, pipe) == -1)
+		return;
+
+	bufferevent_setcb(pipe[0], input_reply_proxy, NULL, NULL, ictx);
+	ictx->remote = remote_create(pipe[1]);
+
+	if (!ictx->remote) {
+		bufferevent_decref(pipe[0]);
+		bufferevent_decref(pipe[1]);
+		return;
+	}
+
+	event_del(&ictx->timer);
+	evbuffer_drain(ictx->since_ground, EVBUFFER_LENGTH(ictx->since_ground));
+
+	ictx->input_event = pipe[0];
+	ictx->flags |= INPUT_REMOTE;
+}
+
+static void
+input_exit_remote(struct input_ctx *ictx)
+{
+	remote_destroy(ictx->remote);
+	bufferevent_decref(ictx->input_event);
+	ictx->remote = NULL;
+	ictx->flags &= ~INPUT_REMOTE;
+}
+#endif
 
 /* OSC string started. */
 static void
