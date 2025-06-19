@@ -2463,6 +2463,9 @@ static void
 input_enter_remote(struct input_ctx *ictx)
 {
 	struct bufferevent *pipe[2];
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+
+	screen_write_puts(sctx, &ictx->cell.cell, "** enter tmux control mode **\n");
 
 	if (bufferevent_pair_new(NULL, 0, pipe) == -1)
 		return;
