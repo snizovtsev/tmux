@@ -110,6 +110,7 @@ struct winlink;
 
 /* Attribute to make GCC check printf-like arguments. */
 #define printflike(a, b) __attribute__ ((format (printf, a, b)))
+#define scanflike(a, b) __attribute__ ((format (scanf, a, b)))
 
 /* Number of items in array. */
 #ifndef nitems
@@ -3441,7 +3442,7 @@ void	control_notify_paste_buffer_changed(const char *);
 void	control_notify_paste_buffer_deleted(const char *);
 
 /* remote.c */
-struct remote *remote_create(struct bufferevent *bev);
+struct remote *remote_create(struct bufferevent *bev, struct window_pane *wp);
 void remote_destroy(struct remote *r);
 
 /* session.c */
