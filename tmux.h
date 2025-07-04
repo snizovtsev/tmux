@@ -2950,8 +2950,8 @@ void	 input_free(struct input_ctx *);
 void	 input_reset(struct input_ctx *, int);
 struct evbuffer *input_pending(struct input_ctx *);
 void	 input_parse_pane(struct window_pane *);
-void	 input_parse_buffer(struct window_pane *, u_char *, size_t);
-void	 input_parse_screen(struct input_ctx *, struct screen *,
+size_t	 input_parse_buffer(struct window_pane *, u_char *, size_t);
+size_t	 input_parse_screen(struct input_ctx *, struct screen *,
 	     screen_write_init_ctx_cb, void *, u_char *, size_t);
 void	 input_reply_clipboard(struct bufferevent *, const char *, size_t,
 	     const char *);
@@ -3203,6 +3203,7 @@ struct window	*window_find_by_id(u_int);
 void		 window_update_activity(struct window *);
 struct window	*window_create(u_int, u_int, u_int, u_int);
 void		 window_pane_set_event(struct window_pane *);
+void		 window_pane_reset_event(struct window_pane *);
 void		 window_pane_set_event_nofd(struct window_pane *wp, struct bufferevent *bev);
 struct window_pane *window_get_active_at(struct window *, u_int, u_int);
 struct window_pane *window_find_string(struct window *, const char *);

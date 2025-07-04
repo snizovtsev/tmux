@@ -1035,12 +1035,16 @@ window_pane_read_callback(__unused struct bufferevent *bufev, void *data)
 	}
 
 	log_debug("%%%u has %zu bytes", wp->id, size);
+
+	input_parse_pane(wp);
+	bufferevent_disable(wp->event, EV_READ);
+
+	/* MOVE remote logic here? */
+	/* XXX: if (wp->ictx->flags & REMOTE) */
 	TAILQ_FOREACH(c, &clients, entry) {
 		if (c->session != NULL && (c->flags & CLIENT_CONTROL))
 			control_write_output(c, wp);
 	}
-	input_parse_pane(wp);
-	bufferevent_disable(wp->event, EV_READ);
 }
 
 static void
@@ -1070,6 +1074,14 @@ window_pane_set_event(struct window_pane *wp)
 	bufferevent_enable(wp->event, EV_READ|EV_WRITE);
 }
 
+/* window_pane_exit_remote? */
+void
+window_pane_reset_event(struct window_pane *wp)
+{
+	bufferevent_setcb(wp->event, window_pane_read_callback, NULL,
+	    window_pane_error_callback, wp);
+}
+
 void
 window_pane_set_event_nofd(struct window_pane *wp, struct bufferevent *bev)
 {
@@ -1077,6 +1089,7 @@ window_pane_set_event_nofd(struct window_pane *wp, struct bufferevent *bev)
 	bufferevent_setcb(bev, window_pane_read_callback,
 	    NULL, window_pane_error_callback, wp);
 	wp->ictx = input_init(wp, wp->event, &wp->palette);
+	wp->fd = 1; /* HACK: pretend to be alive */
 
 	bufferevent_enable(wp->event, EV_READ|EV_WRITE);
 }
@@ -1678,6 +1691,7 @@ winlink_shuffle_up(struct session *s, struct winlink *wl, int before)
 	return (idx);
 }
 
+/* XXX: must be integrated with divert */
 static void
 window_pane_input_callback(struct client *c, __unused const char *path,
     int error, int closed, struct evbuffer *buffer, void *data)
@@ -1699,7 +1713,7 @@ window_pane_input_callback(struct client *c, __unused const char *path,
 		server_client_unref(c);
 		free(cdata);
 	} else
-		input_parse_buffer(wp, buf, len);
+		/*read = */input_parse_buffer(wp, buf, len);
 	evbuffer_drain(buffer, len);
 }
 

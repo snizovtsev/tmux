@@ -607,7 +607,7 @@ popup_job_update_cb(struct job *job)
 		c->overlay_check = NULL;
 		c->overlay_data = NULL;
 	}
-	input_parse_screen(pd->ictx, s, popup_init_ctx_cb, pd, data, size);
+	/* read = */input_parse_screen(pd->ictx, s, popup_init_ctx_cb, pd, data, size);
 	c->overlay_check = popup_check_cb;
 	c->overlay_data = pd;
 

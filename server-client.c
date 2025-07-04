@@ -2872,6 +2872,7 @@ server_client_check_pane_buffer(struct window_pane *wp)
 		wp->base_offset += minimum;
 
 out:
+	/* XXX: can this logic accidently stop control mode input? */
 	/*
 	 * If there is data remaining, and there are no clients able to consume
 	 * it, do not read any more. This is true when there are attached

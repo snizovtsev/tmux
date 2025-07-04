@@ -96,7 +96,6 @@ struct input_ctx {
 	size_t			param_len;
 
 #define INPUT_BUF_START 32
-	struct bufferevent     *input_event;
 	u_char		       *input_buf;
 	size_t			input_len;
 	size_t			input_space;
@@ -162,10 +161,8 @@ static void	input_exit_apc(struct input_ctx *);
 static void	input_enter_rename(struct input_ctx *);
 static void	input_exit_rename(struct input_ctx *);
 static void 	input_enter_dcs_handler(struct input_ctx *);
-#ifdef ENABLE_REMOTE
 static void 	input_enter_remote(struct input_ctx *);
 static void 	input_exit_remote(struct input_ctx *);
-#endif
 
 /* Input state handlers. */
 static int	input_print(struct input_ctx *);
@@ -907,7 +904,7 @@ input_set_state(struct input_ctx *ictx, const struct input_transition *itr)
 }
 
 /* Parse data. */
-static void
+static size_t
 input_parse(struct input_ctx *ictx, u_char *buf, size_t len)
 {
 	struct screen_write_ctx		*sctx = &ictx->ctx;
@@ -959,14 +956,16 @@ input_parse(struct input_ctx *ictx, u_char *buf, size_t len)
 		if (itr->state != NULL)
 			input_set_state(ictx, itr);
 
+		/* Divert input to the remote */
+		if (ictx->flags & INPUT_REMOTE)
+			return off;
+
 		/* If not in ground state, save input. */
-		if (ictx->state != &input_state_ground && ~ictx->flags & INPUT_REMOTE)
+		if (ictx->state != &input_state_ground)
 			evbuffer_add(ictx->since_ground, &ictx->ch, 1);
 	}
 
-	if (ictx->input_event) {
-		bufferevent_flush(ictx->input_event, EV_WRITE, BEV_FLUSH);
-	}
+	return off;
 }
 
 /* Parse input from pane. */
@@ -977,19 +976,19 @@ input_parse_pane(struct window_pane *wp)
 	size_t	 new_size;
 
 	new_data = window_pane_get_new_data(wp, &wp->offset, &new_size);
-	input_parse_buffer(wp, new_data, new_size);
+	new_size = input_parse_buffer(wp, new_data, new_size);
 	window_pane_update_used_data(wp, &wp->offset, new_size);
 }
 
 /* Parse given input. */
-void
+size_t
 input_parse_buffer(struct window_pane *wp, u_char *buf, size_t len)
 {
 	struct input_ctx	*ictx = wp->ictx;
 	struct screen_write_ctx	*sctx = &ictx->ctx;
 
 	if (len == 0)
-		return;
+		return 0;
 
 	window_update_activity(wp->window);
 	wp->flags |= PANE_CHANGED;
@@ -1007,23 +1006,25 @@ input_parse_buffer(struct window_pane *wp, u_char *buf, size_t len)
 	log_debug("%s: %%%u %s, %zu bytes: %.*s", __func__, wp->id,
 	    ictx->state->name, len, (int)len, buf);
 
-	input_parse(ictx, buf, len);
+	len = input_parse(ictx, buf, len);
 	screen_write_stop(sctx);
+	return len;
 }
 
 /* Parse given input for screen. */
-void
+size_t
 input_parse_screen(struct input_ctx *ictx, struct screen *s,
     screen_write_init_ctx_cb cb, void *arg, u_char *buf, size_t len)
 {
 	struct screen_write_ctx	*sctx = &ictx->ctx;
 
 	if (len == 0)
-		return;
+		return 0;
 
 	screen_write_start_callback(sctx, s, cb, arg);
-	input_parse(ictx, buf, len);
+	len = input_parse(ictx, buf, len);
 	screen_write_stop(sctx);
+	return len;
 }
 
 /* Split the parameter list (if any). */
@@ -1209,13 +1210,9 @@ static void
 input_enter_dcs_handler(struct input_ctx *ictx)
 {
 #ifdef ENABLE_REMOTE
-	char *s;
-
-	/* Check for control mode sequence */
-	s = ictx->param_buf;
-        if (ictx->ch == 'p' && strcmp(s, "1000") == 0) {
+	if (ictx->ch == 'p' && (~ictx->flags & INPUT_REMOTE) &&
+	    strcmp(ictx->param_buf, "1000") == 0)
 		input_enter_remote(ictx);
-        }
 #endif
 }
 
@@ -1224,11 +1221,6 @@ static int
 input_input(struct input_ctx *ictx)
 {
 	size_t available;
-
-        if (ictx->input_event) {
-		bufferevent_write(ictx->input_event, &ictx->ch, 1);
-		return (0);
-        }
 
 	available = ictx->input_space;
 	while (ictx->input_len + 1 >= available) {
@@ -2450,51 +2442,110 @@ input_dcs_dispatch(struct input_ctx *ictx)
 	return (0);
 }
 
-#ifdef ENABLE_REMOTE
-static void
-input_reply_proxy(struct bufferevent *bev, void *ctx)
-{
-	struct input_ctx *ictx = ctx;
+struct divert_ctx {
+	struct window_pane  *wp;
+	struct evbuffer	    *temp_buf;
+	bufferevent_data_cb  saved_readcb;
+	bufferevent_data_cb  saved_writecb;
+	bufferevent_event_cb saved_eventcb;
+	void		    *saved_cbarg;
+};
 
-	bufferevent_read_buffer(bev, bufferevent_get_output(ictx->event));
+static enum bufferevent_filter_result
+input_divert_cb(struct evbuffer *src, struct evbuffer *dst, ev_ssize_t limit,
+    enum bufferevent_flush_mode mode, void *ctx)
+{
+	struct divert_ctx  *d = ctx;
+	struct window_pane *wp = d->wp;
+	struct evbuffer_ptr eos;
+	size_t		    used = wp->offset.used - wp->base_offset;
+	int		    error;
+
+	evbuffer_remove_buffer(src, d->temp_buf, used);
+	eos = evbuffer_search(src, "\033\\", 2, NULL);
+
+	if (limit < 0)
+		limit = EV_SSIZE_MAX;
+	if (eos.pos >= 0 && eos.pos <= limit)
+		limit = eos.pos;
+	/* if (eos.pos >= 0 || mode == BEV_FINISHED) */
+	/* 	window_pane_reset_event(wp); */
+
+	error = evbuffer_remove_buffer(src, dst, limit);
+	evbuffer_prepend_buffer(src, d->temp_buf);
+
+	return (error > 0) ? BEV_OK : BEV_ERROR;
+}
+
+static void
+input_restore(void *ctx)
+{
+	struct divert_ctx *d = ctx;
+
+	bufferevent_setcb(d->wp->event, d->saved_readcb, d->saved_writecb,
+	    d->saved_eventcb, d->saved_cbarg);
+	evbuffer_free(d->temp_buf);
+	free(d);
+}
+
+static struct bufferevent *
+input_divert(struct window_pane *wp)
+{
+	struct divert_ctx  *d;
+	struct bufferevent *ev;
+
+	d = xcalloc(1, sizeof *d);
+	if (d == NULL)
+		return (NULL);
+
+	d->wp = wp;
+	d->temp_buf = evbuffer_new();
+	bufferevent_getcb(wp->event, &d->saved_readcb, &d->saved_writecb,
+	    &d->saved_eventcb, &d->saved_cbarg);
+	ev = bufferevent_filter_new(
+	    wp->event, input_divert_cb, NULL, 0, input_restore, d);
+
+	if (ev == NULL)
+		input_restore(d);
+	return (ev);
 }
 
 static void
 input_enter_remote(struct input_ctx *ictx)
 {
-	struct bufferevent *pipe[2];
-	struct screen_write_ctx	*sctx = &ictx->ctx;
+#ifdef ENABLE_REMOTE
+	struct bufferevent *rev;
+	struct window_pane *wp = ictx->wp;
+	struct window_mode_entry *wme = TAILQ_FIRST(&wp->modes);
 
-	screen_write_puts(sctx, &ictx->cell.cell, "** enter tmux control mode **\n");
+	if (wme == NULL || wme->mode != &window_view_mode)
+		window_pane_set_mode(wp, NULL, &window_remote_mode, NULL, NULL);
 
-	if (bufferevent_pair_new(NULL, 0, pipe) == -1)
-		return;
-
-	bufferevent_setcb(pipe[0], input_reply_proxy, NULL, NULL, ictx);
-	ictx->remote = remote_create(pipe[1]);
-
-	if (!ictx->remote) {
-		bufferevent_decref(pipe[0]);
-		bufferevent_decref(pipe[1]);
+	rev = input_divert(wp);
+	ictx->remote = remote_create(rev, wp);
+	if (ictx->remote == NULL) {
+		bufferevent_free(rev);
 		return;
 	}
 
-	event_del(&ictx->timer);
-	evbuffer_drain(ictx->since_ground, EVBUFFER_LENGTH(ictx->since_ground));
+	bufferevent_enable(rev, EV_READ|EV_WRITE);
 
-	ictx->input_event = pipe[0];
+	event_del(&ictx->timer);
+	evbuffer_drain(ictx->since_ground, EV_SIZE_MAX);
+
 	ictx->flags |= INPUT_REMOTE;
+#endif
 }
 
 static void
 input_exit_remote(struct input_ctx *ictx)
 {
+#ifdef ENABLE_REMOTE
 	remote_destroy(ictx->remote);
-	bufferevent_decref(ictx->input_event);
 	ictx->remote = NULL;
 	ictx->flags &= ~INPUT_REMOTE;
-}
 #endif
+}
 
 /* OSC string started. */
 static void
