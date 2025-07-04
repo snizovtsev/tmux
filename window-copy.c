@@ -176,6 +176,18 @@ const struct window_mode window_view_mode = {
 	.get_screen = window_copy_get_screen
 };
 
+const struct window_mode window_remote_mode = {
+	.name = "remote-mode",
+
+	.init = window_copy_view_init,
+	.free = window_copy_free,
+	.resize = window_copy_resize,
+	.key_table = window_copy_key_table,
+	.command = window_copy_command,
+	.formats = window_copy_formats,
+	.get_screen = window_copy_get_screen
+};
+
 enum {
 	WINDOW_COPY_OFF,
 	WINDOW_COPY_SEARCHUP,
@@ -3163,7 +3175,7 @@ window_copy_command(struct window_mode_entry *wme, struct client *c,
 	}
 	wme->prefix = 1;
 
-	if (action == WINDOW_COPY_CMD_CANCEL)
+	if (action == WINDOW_COPY_CMD_CANCEL && wme->mode != &window_remote_mode) /*FIXME*/
 		window_pane_reset_mode(wp);
 	else if (action == WINDOW_COPY_CMD_REDRAW)
 		window_copy_redraw_screen(wme);

@@ -3384,6 +3384,7 @@ extern const struct window_mode window_client_mode;
 /* window-copy.c */
 extern const struct window_mode window_copy_mode;
 extern const struct window_mode window_view_mode;
+extern const struct window_mode window_remote_mode;
 void printflike(3, 4) window_copy_add(struct window_pane *, int, const char *,
 		     ...);
 void printflike(3, 0) window_copy_vadd(struct window_pane *, int, const char *,
