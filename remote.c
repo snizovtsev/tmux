@@ -1,7 +1,8 @@
+#include <ctype.h>
 #include <event2/util.h>
 #include <inttypes.h>
 #include <string.h>
-#include <stdlib.h>>
+#include <stdlib.h>
 
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
@@ -384,6 +385,31 @@ remote_output(struct remote *r, u_int pane_id, char *data)
 	bufferevent_flush(cp->event, EV_WRITE, BEV_FLUSH);
 }
 
+struct remote_input_ctx {
+	struct bufferevent *event;
+	struct evbuffer	   *message;
+	uint32_t	    pane_id;
+};
+
+static void
+remote_input(struct bufferevent *kev, void *ctx)
+{
+	struct remote_input_ctx *ictx = ctx;
+
+	char buf[100] = {0};
+	size_t n;
+
+	n = bufferevent_read(kev, buf, 99);
+	for (size_t i = 0; i < n; ++i) {
+		if (!isprint(buf[i]))
+			buf[i] = '?';
+	}
+
+	evbuffer_add_printf(ictx->message, "send -t %%%u %s\n", ictx->pane_id, buf);
+	bufferevent_write_buffer(ictx->event, ictx->message);
+	bufferevent_flush(ictx->event, EV_WRITE, BEV_FLUSH);
+}
+
 struct remote_bootstrap_ctx {
 	struct remote_query    q;
 	struct environ	      *env;
@@ -422,10 +448,13 @@ remote_add_panes(struct remote *r, struct remote_bootstrap_ctx *ctx)
 	struct client_window  find;
 	struct client_window *cw;
 	struct client_pane   *cp;
-	struct window_pane   *wp;
+	struct window_pane   *wp = NULL;
+	struct remote_input_ctx *rictx;
 	struct bufferevent   *pipe[2];
 	char		     *line, *iter;
-	u_int		      window_id, pane_id, window_index, sx, sy;
+	u_int		      window_id, pane_id;
+	u_int		      window_index, pane_index;
+	u_int		      sx, sy, active;
 
 	u_int hlimit = options_get_number(s->options, "history-limit");
 
@@ -438,6 +467,8 @@ remote_add_panes(struct remote *r, struct remote_bootstrap_ctx *ctx)
 		sx = atol(strsep(&iter, "\t"));
 		sy = atol(strsep(&iter, "\t"));
 		pane_id = atol(strsep(&iter, "\t") + /*%*/1);
+		pane_index = atol(strsep(&iter, "\t"));
+		active = atol(strsep(&iter, "\t"));
 
 		find.window = window_id;
 		cw = RB_FIND(client_windows, &ctx->windows, &find);
@@ -454,9 +485,12 @@ remote_add_panes(struct remote *r, struct remote_bootstrap_ctx *ctx)
 			w = cw->pane->window;
 		}
 
-		wp = window_add_pane(w, NULL, hlimit, 0);
+		wp = window_add_pane(w, wp, hlimit, 0);
 		if (cw == NULL)
 			layout_init(w, wp);
+
+		if (active || cw == NULL)
+			w->active = wp;
 
 		if (cw == NULL) {
 			cw = xcalloc(1, sizeof *cw);
@@ -465,11 +499,15 @@ remote_add_panes(struct remote *r, struct remote_bootstrap_ctx *ctx)
 			RB_INSERT(client_windows, &ctx->windows, cw);
 		}
 
-		// HACK
-		window_set_active_pane(w, wp, 0);
-
 		bufferevent_pair_new(NULL, 0, pipe);
 		window_pane_set_event_nofd(wp, pipe[1]);
+
+		rictx = xcalloc(1, sizeof *rictx);
+		rictx->event = r->event;
+		rictx->message = evbuffer_new();
+		rictx->pane_id = pane_id;
+		bufferevent_setcb(pipe[0], remote_input, NULL, NULL, rictx);
+		bufferevent_enable(pipe[0], EV_READ);
 
 		cp = xcalloc(1, sizeof *cp);
 		cp->cw.window = pane_id;
@@ -554,6 +592,8 @@ remote_bootstrap_next(struct remote *r, struct remote_query *q)
 	r->session = ctx->session;
 	r->windows = ctx->windows;
 	r->panes = ctx->panes;
+
+	server_redraw_session(r->session);
 }
 
 static void
@@ -593,7 +633,8 @@ remote_session_changed(struct remote *r, u_int session_id, char *name)
 	    "#{window_width}\t"
 	    "#{window_height}\t"
 	    "#{pane_id}\t"
-	    "#{pane_index}");
+	    "#{pane_index}\t"
+	    "#{pane_active}");
 
 	remote_run(r, &ctx->q, "list-windows -t $%u -F \"%s\";", session_id,
 	    "#{window_id}\t"
@@ -661,6 +702,11 @@ remote_client_session_changed(struct remote *r, char *pty, u_int session_id, cha
 static void
 remote_window_pane_changed(struct remote *r, u_int window_id, u_int pane_id)
 {
+	struct client_window key = { .window = pane_id };
+	struct window_pane  *wp;
+
+	wp = RB_FIND(client_windows, &r->panes, &key)->pane;
+	window_set_active_pane(wp->window, wp, 1);
 }
 
 /* A window was closed in the attached session. */
@@ -691,6 +737,12 @@ remote_unlinked_window_add(struct remote *r, u_int window_id)
 static void
 remote_session_window_changed(struct remote *r, u_int session_id, u_int window_id)
 {
+	struct client_window key = { .window = window_id };
+	struct window	    *w;
+
+	w = RB_FIND(client_windows, &r->windows, &key)->pane->window;
+	session_set_current(r->session, TAILQ_FIRST(&w->winlinks));
+	server_redraw_session(r->session);
 }
 
 /* A session was created or destroyed. */
