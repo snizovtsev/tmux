@@ -386,28 +386,36 @@ remote_output(struct remote *r, u_int pane_id, char *data)
 }
 
 struct remote_input_ctx {
+	struct remote	   *r;
 	struct bufferevent *event;
-	struct evbuffer	   *message;
 	uint32_t	    pane_id;
 };
+
+static void
+remote_send_keys_acked(struct remote *r, struct remote_query *q)
+{
+
+}
 
 static void
 remote_input(struct bufferevent *kev, void *ctx)
 {
 	struct remote_input_ctx *ictx = ctx;
+	struct remote		*r = ictx->r;
+	struct remote_query	*q;
 
-	char buf[100] = {0};
+	char keys[64] = {0};
+	char hex[64*3] = {0};
 	size_t n;
 
-	n = bufferevent_read(kev, buf, 99);
+	n = bufferevent_read(kev, keys, 63);
 	for (size_t i = 0; i < n; ++i) {
-		if (!isprint(buf[i]))
-			buf[i] = '?';
+		sprintf(hex + (i*3), "%02X ", (int)keys[i]);
 	}
 
-	evbuffer_add_printf(ictx->message, "send -t %%%u %s\n", ictx->pane_id, buf);
-	bufferevent_write_buffer(ictx->event, ictx->message);
-	bufferevent_flush(ictx->event, EV_WRITE, BEV_FLUSH);
+	q = xcalloc(1, sizeof *q);
+	q->done = remote_send_keys_acked;
+	remote_run(r, q, "send-keys -t %%%u -lH %s\n", ictx->pane_id, hex);
 }
 
 struct remote_bootstrap_ctx {
@@ -503,8 +511,7 @@ remote_add_panes(struct remote *r, struct remote_bootstrap_ctx *ctx)
 		window_pane_set_event_nofd(wp, pipe[1]);
 
 		rictx = xcalloc(1, sizeof *rictx);
-		rictx->event = r->event;
-		rictx->message = evbuffer_new();
+		rictx->r = r;
 		rictx->pane_id = pane_id;
 		bufferevent_setcb(pipe[0], remote_input, NULL, NULL, rictx);
 		bufferevent_enable(pipe[0], EV_READ);
