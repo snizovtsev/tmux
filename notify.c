@@ -123,37 +123,47 @@ static enum cmd_retval
 notify_callback(struct cmdq_item *item, void *data)
 {
 	struct notify_entry	*ne = data;
+	struct remote 		*r = ne->fs.s ? ne->fs.s->remote : NULL;
 
 	log_debug("%s: %s", __func__, ne->name);
 
-	if (strcmp(ne->name, "pane-mode-changed") == 0)
-		control_notify_pane_mode_changed(ne->pane);
-	if (strcmp(ne->name, "window-layout-changed") == 0)
-		control_notify_window_layout_changed(ne->window);
-	if (strcmp(ne->name, "window-pane-changed") == 0)
-		control_notify_window_pane_changed(ne->window);
-	if (strcmp(ne->name, "window-unlinked") == 0)
-		control_notify_window_unlinked(ne->session, ne->window);
-	if (strcmp(ne->name, "window-linked") == 0)
-		control_notify_window_linked(ne->session, ne->window);
-	if (strcmp(ne->name, "window-renamed") == 0)
-		control_notify_window_renamed(ne->window);
-	if (strcmp(ne->name, "client-session-changed") == 0)
-		control_notify_client_session_changed(ne->client);
-	if (strcmp(ne->name, "client-detached") == 0)
-		control_notify_client_detached(ne->client);
-	if (strcmp(ne->name, "session-renamed") == 0)
-		control_notify_session_renamed(ne->session);
-	if (strcmp(ne->name, "session-created") == 0)
-		control_notify_session_created(ne->session);
-	if (strcmp(ne->name, "session-closed") == 0)
-		control_notify_session_closed(ne->session);
-	if (strcmp(ne->name, "session-window-changed") == 0)
-		control_notify_session_window_changed(ne->session);
-	if (strcmp(ne->name, "paste-buffer-changed") == 0)
-		control_notify_paste_buffer_changed(ne->pbname);
-	if (strcmp(ne->name, "paste-buffer-deleted") == 0)
-		control_notify_paste_buffer_deleted(ne->pbname);
+	if (r == NULL) {
+		if (strcmp(ne->name, "pane-mode-changed") == 0)
+			control_notify_pane_mode_changed(ne->pane);
+		if (strcmp(ne->name, "window-layout-changed") == 0)
+			control_notify_window_layout_changed(ne->window);
+		if (strcmp(ne->name, "window-pane-changed") == 0)
+			control_notify_window_pane_changed(ne->window);
+		if (strcmp(ne->name, "window-unlinked") == 0)
+			control_notify_window_unlinked(ne->session, ne->window);
+		if (strcmp(ne->name, "window-linked") == 0)
+			control_notify_window_linked(ne->session, ne->window);
+		if (strcmp(ne->name, "window-renamed") == 0)
+			control_notify_window_renamed(ne->window);
+		if (strcmp(ne->name, "client-session-changed") == 0)
+			control_notify_client_session_changed(ne->client);
+		if (strcmp(ne->name, "client-detached") == 0)
+			control_notify_client_detached(ne->client);
+		if (strcmp(ne->name, "session-renamed") == 0)
+			control_notify_session_renamed(ne->session);
+		if (strcmp(ne->name, "session-created") == 0)
+			control_notify_session_created(ne->session);
+		if (strcmp(ne->name, "session-closed") == 0)
+			control_notify_session_closed(ne->session);
+		if (strcmp(ne->name, "session-window-changed") == 0)
+			control_notify_session_window_changed(ne->session);
+		if (strcmp(ne->name, "paste-buffer-changed") == 0)
+			control_notify_paste_buffer_changed(ne->pbname);
+		if (strcmp(ne->name, "paste-buffer-deleted") == 0)
+			control_notify_paste_buffer_deleted(ne->pbname);
+	} else {
+		if (strcmp(ne->name, "window-layout-changed") == 0)
+			remote_notify_window_layout_changed(r, ne->window);
+		if (strcmp(ne->name, "window-pane-changed") == 0)
+			remote_notify_window_pane_changed(r, ne->window);
+		if (strcmp(ne->name, "session-window-changed") == 0)
+			remote_notify_session_window_changed(r);
+	}
 
 	notify_insert_hook(item, ne);
 

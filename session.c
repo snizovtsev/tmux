@@ -480,7 +480,7 @@ session_last(struct session *s)
 
 /* Set current winlink to wl .*/
 int
-session_set_current(struct session *s, struct winlink *wl)
+session_sync_current(struct session *s, struct winlink *wl)
 {
 	struct winlink	*old = s->curw;
 
@@ -500,8 +500,18 @@ session_set_current(struct session *s, struct winlink *wl)
 	winlink_clear_flags(wl);
 	window_update_activity(wl->window);
 	tty_update_window_offset(wl->window);
-	notify_session("session-window-changed", s);
 	return (0);
+}
+
+int
+session_set_current(struct session *s, struct winlink *wl)
+{
+	int result;
+
+	result = session_sync_current(s, wl);
+	if (result == 0)
+		notify_session("session-window-changed", s);
+	return (result);
 }
 
 /* Find the session group containing a session. */

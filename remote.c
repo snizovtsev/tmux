@@ -330,6 +330,8 @@ remote_dispatch_event(struct remote *r, u_char *line, size_t len)
 	else if (strncmp(line, "%exit", 5) == 0)
 		remote_exit(r);
 
+	/* TODO: %subscription-changed */
+
 	free(ss.rest);
 	free(client);
 }
@@ -586,6 +588,7 @@ remote_bootstrap_next(struct remote *r, struct remote_query *q)
 		oo = options_create(global_s_options);
 		ctx->session = session_create(
 		    NULL, ctx->session_name, "/tmp", ctx->env, oo, NULL);
+		ctx->session->remote = r;
 		return;
 	case 2:
 		remote_add_panes(r, ctx);
@@ -713,7 +716,7 @@ remote_window_pane_changed(struct remote *r, u_int window_id, u_int pane_id)
 	struct window_pane  *wp;
 
 	wp = RB_FIND(client_windows, &r->panes, &key)->pane;
-	window_set_active_pane(wp->window, wp, 1);
+	window_set_active_pane(wp->window, wp, 0);
 }
 
 /* A window was closed in the attached session. */
@@ -748,13 +751,62 @@ remote_session_window_changed(struct remote *r, u_int session_id, u_int window_i
 	struct window	    *w;
 
 	w = RB_FIND(client_windows, &r->windows, &key)->pane->window;
-	session_set_current(r->session, TAILQ_FIRST(&w->winlinks));
+	session_sync_current(r->session, TAILQ_FIRST(&w->winlinks));
 	server_redraw_session(r->session);
 }
 
 /* A session was created or destroyed. */
 static void
 remote_sessions_changed(struct remote *r)
+{
+}
+
+static void
+remote_select_pane_acked(struct remote *r, struct remote_query *q)
+{
+
+}
+
+void
+remote_notify_window_pane_changed(struct remote *r, struct window *w)
+{
+	struct remote_query  *q;
+	struct client_window *cw = NULL;
+
+	RB_FOREACH(cw, client_windows, &r->panes) {
+		if (cw->pane == w->active)
+			break;
+	}
+
+	remote_log(r, "select-pane -t %%%u", cw->window);
+
+	q = xcalloc(1, sizeof *q);
+	q->done = remote_select_pane_acked;
+	q->error = NULL;
+	remote_run(r, q, "select-pane -t %%%u\n", cw->window);
+}
+
+void
+remote_notify_session_window_changed(struct remote *r)
+{
+	struct remote_query  *q;
+	struct client_window *cw = NULL;
+
+	RB_FOREACH(cw, client_windows, &r->windows) {
+		if (cw->pane->window == r->session->curw->window)
+			break;
+	}
+
+	remote_log(r, "select-window -t @%u", cw->window);
+
+	q = xcalloc(1, sizeof *q);
+	q->done = remote_select_pane_acked;
+	q->error = NULL;
+	remote_run(r, q, "select-window -t @%u\n", cw->window);
+}
+
+void
+remote_notify_window_layout_changed(struct remote *r, struct window *w)
 {
 }
 

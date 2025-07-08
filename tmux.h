@@ -1391,6 +1391,7 @@ struct session {
 
 	struct event	 lock_timer;
 
+	struct remote 	*remote;
 	struct winlink	*curw;
 	struct winlink_stack lastw;
 	struct winlinks	 windows;
@@ -3445,6 +3446,9 @@ void	control_notify_paste_buffer_deleted(const char *);
 
 /* remote.c */
 struct remote *remote_create(struct bufferevent *bev, struct window_pane *wp);
+void remote_notify_window_pane_changed(struct remote *, struct window *);
+void remote_notify_window_layout_changed(struct remote *, struct window *);
+void remote_notify_session_window_changed(struct remote *);
 void remote_destroy(struct remote *r);
 
 /* session.c */
@@ -3478,6 +3482,7 @@ int		 session_previous(struct session *, int);
 int		 session_select(struct session *, int);
 int		 session_last(struct session *);
 int		 session_set_current(struct session *, struct winlink *);
+int		 session_sync_current(struct session *, struct winlink *);
 struct session_group *session_group_contains(struct session *);
 struct session_group *session_group_find(const char *);
 struct session_group *session_group_new(const char *);
