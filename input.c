@@ -2466,8 +2466,10 @@ input_divert_cb(struct evbuffer *src, struct evbuffer *dst, ev_ssize_t limit,
 
 	if (limit < 0)
 		limit = EV_SSIZE_MAX;
-	if (eos.pos >= 0 && eos.pos <= limit)
+	if (eos.pos >= 0 && eos.pos <= limit) {
+		window_copy_add(wp, 0, "CC mode EOF marker found, stop output");
 		limit = eos.pos;
+	}
 	/* if (eos.pos >= 0 || mode == BEV_FINISHED) */
 	/* 	window_pane_reset_event(wp); */
 
