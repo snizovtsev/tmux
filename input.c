@@ -75,7 +75,7 @@ struct input_param {
 /* Input parser context. */
 struct input_ctx {
 	struct window_pane     *wp;
-	struct bufferevent     *event;
+	struct evbuffer        *output;
 	struct screen_write_ctx ctx;
 	struct colour_palette  *palette;
 
@@ -826,14 +826,14 @@ input_restore_state(struct input_ctx *ictx)
 
 /* Initialise input parser. */
 struct input_ctx *
-input_init(struct window_pane *wp, struct bufferevent *bev,
+input_init(struct window_pane *wp, struct evbuffer *output,
     struct colour_palette *palette)
 {
 	struct input_ctx	*ictx;
 
 	ictx = xcalloc(1, sizeof *ictx);
 	ictx->wp = wp;
-	ictx->event = bev;
+	ictx->output = output;
 	ictx->palette = palette;
 
 	ictx->input_space = INPUT_BUF_START;
@@ -1102,20 +1102,23 @@ input_get(struct input_ctx *ictx, u_int validx, int minval, int defval)
 static void
 input_reply(struct input_ctx *ictx, const char *fmt, ...)
 {
-	struct bufferevent	*bev = ictx->event;
-	va_list			 ap;
-	char			*reply;
+	struct evbuffer *evb = ictx->output;
+	va_list		 ap;
+	char		*reply;
+	int		 len;
 
-	if (bev == NULL)
+	if (evb == NULL)
 		return;
 
 	va_start(ap, fmt);
-	xvasprintf(&reply, fmt, ap);
+	len = evbuffer_add_vprintf(evb, fmt, ap);
+	reply = EVBUFFER_DATA(evb) + EVBUFFER_LENGTH(evb) - len;
 	va_end(ap);
 
-	log_debug("%s: %s", __func__, reply);
-	bufferevent_write(bev, reply, strlen(reply));
-	free(reply);
+	if (len >= 0)
+		log_debug("%s: %.*s", __func__, len, reply);
+	else
+		log_debug("%s error", __func__);
 }
 
 /* Clear saved state. */
@@ -3115,7 +3118,7 @@ void
 input_reply_clipboard(struct input_ctx *ictx, const char *buf, size_t len,
     const char *end)
 {
-	struct bufferevent *bev = ictx->event;
+	struct evbuffer *evb = ictx->output;
 	char	*out = NULL;
 	int	 outlen = 0;
 
@@ -3130,10 +3133,10 @@ input_reply_clipboard(struct input_ctx *ictx, const char *buf, size_t len,
 		}
 	}
 
-	bufferevent_write(bev, "\033]52;;", 6);
+	evbuffer_add(evb, "\033]52;;", 6);
 	if (outlen != 0)
-		bufferevent_write(bev, out, outlen);
-	bufferevent_write(bev, end, strlen(end));
+		evbuffer_add(evb, out, outlen);
+	evbuffer_add(evb, end, strlen(end));
 	free(out);
 }
 
