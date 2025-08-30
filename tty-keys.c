@@ -1382,7 +1382,7 @@ tty_keys_clipboard(struct tty *tty, const char *buf, size_t len, size_t *size)
 	for (i = 0; i < c->clipboard_npanes; i++) {
 		wp = window_pane_find_by_id(c->clipboard_panes[i]);
 		if (wp != NULL)
-			input_reply_clipboard(wp->event, out, outlen, "\033\\");
+			input_reply_clipboard(wp->ictx, out, outlen, "\033\\");
 	}
 	free(c->clipboard_panes);
 	c->clipboard_panes = NULL;

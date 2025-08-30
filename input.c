@@ -3050,9 +3050,9 @@ input_osc_52(struct input_ctx *ictx, const char *p)
 		if ((pb = paste_get_top(NULL)) != NULL)
 			buf = paste_buffer_data(pb, &len);
 		if (ictx->input_end == INPUT_END_BEL)
-			input_reply_clipboard(ictx->event, buf, len, "\007");
+			input_reply_clipboard(ictx, buf, len, "\007");
 		else
-			input_reply_clipboard(ictx->event, buf, len, "\033\\");
+			input_reply_clipboard(ictx, buf, len, "\033\\");
 		return;
 	}
 
@@ -3112,9 +3112,10 @@ input_osc_104(struct input_ctx *ictx, const char *p)
 }
 
 void
-input_reply_clipboard(struct bufferevent *bev, const char *buf, size_t len,
+input_reply_clipboard(struct input_ctx *ictx, const char *buf, size_t len,
     const char *end)
 {
+	struct bufferevent *bev = ictx->event;
 	char	*out = NULL;
 	int	 outlen = 0;
 

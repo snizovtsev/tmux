@@ -2963,7 +2963,7 @@ void	 input_parse_pane(struct window_pane *);
 void	 input_parse_buffer(struct window_pane *, u_char *, size_t);
 void	 input_parse_screen(struct input_ctx *, struct screen *,
 	     screen_write_init_ctx_cb, void *, u_char *, size_t);
-void	 input_reply_clipboard(struct bufferevent *, const char *, size_t,
+void	 input_reply_clipboard(struct input_ctx *, const char *, size_t,
 	     const char *);
 void	 input_set_buffer_size(size_t);
 
