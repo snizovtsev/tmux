@@ -870,7 +870,7 @@ format_cb_current_command(struct format_tree *ft)
 	struct window_pane	*wp = ft->wp;
 	char			*cmd, *value;
 
-	if (wp == NULL || wp->shell == NULL)
+	if (wp == NULL || wp->shell == NULL || wp->fd == -1)
 		return (NULL);
 
 	cmd = osdep_get_name(wp->fd, wp->tty);
@@ -894,7 +894,7 @@ format_cb_current_path(struct format_tree *ft)
 	struct window_pane	*wp = ft->wp;
 	char			*cwd;
 
-	if (wp == NULL)
+	if (wp == NULL || wp->fd == -1)
 		return (NULL);
 
 	cwd = osdep_get_cwd(wp->fd);
@@ -1982,7 +1982,7 @@ static void *
 format_cb_pane_dead(struct format_tree *ft)
 {
 	if (ft->wp != NULL) {
-		if (ft->wp->fd == -1)
+		if (ft->wp->event == NULL)
 			return (xstrdup("1"));
 		return (xstrdup("0"));
 	}

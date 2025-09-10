@@ -2674,7 +2674,7 @@ server_client_loop(void)
 	 */
 	RB_FOREACH(w, windows, &windows) {
 		TAILQ_FOREACH(wp, &w->panes, entry) {
-			if (wp->fd != -1) {
+			if (wp->event != NULL) {
 				server_client_check_pane_resize(wp);
 				server_client_check_pane_buffer(wp);
 			}

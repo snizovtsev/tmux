@@ -859,7 +859,7 @@ window_tree_search(__unused void *modedata, void *itemdata, const char *ss)
 			return (0);
 		return (strstr(wl->window->name, ss) != NULL);
 	case WINDOW_TREE_PANE:
-		if (s == NULL || wl == NULL || wp == NULL)
+		if (s == NULL || wl == NULL || wp == NULL || wp->fd == -1)
 			break;
 		cmd = osdep_get_name(wp->fd, wp->tty);
 		if (cmd == NULL || *cmd == '\0') {
