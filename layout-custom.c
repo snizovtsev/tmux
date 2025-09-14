@@ -27,10 +27,6 @@ static struct layout_cell	*layout_find_bottomright(struct layout_cell *);
 static u_short			 layout_checksum(const char *);
 static int			 layout_append(struct layout_cell *, char *,
 				     size_t);
-static struct layout_cell	*layout_construct(struct layout_cell *,
-				     const char **);
-static void			 layout_assign(struct window_pane **,
-				     struct layout_cell *);
 
 /* Find the bottom-right cell. */
 static struct layout_cell *
@@ -261,7 +257,7 @@ fail:
 }
 
 /* Assign panes into cells. */
-static void
+void
 layout_assign(struct window_pane **wp, struct layout_cell *lc)
 {
 	struct layout_cell	*lcchild;
@@ -280,49 +276,29 @@ layout_assign(struct window_pane **wp, struct layout_cell *lc)
 }
 
 /* Construct a cell from all or part of a layout tree. */
-static struct layout_cell *
+struct layout_cell *
 layout_construct(struct layout_cell *lcparent, const char **layout)
 {
-	struct layout_cell     *lc, *lcchild;
-	u_int			sx, sy, xoff, yoff;
-	const char	       *saved;
+	struct layout_cell *lc, *lcchild;
+	u_int		    sx, sy, xoff, yoff, id;
+	int		    nread = 0;
 
-	if (!isdigit((u_char) **layout))
-		return (NULL);
-	if (sscanf(*layout, "%ux%u,%u,%u", &sx, &sy, &xoff, &yoff) != 4)
+	if (sscanf(*layout, "%ux%u,%u,%u%n", &sx, &sy, &xoff, &yoff, &nread) != 4)
 		return (NULL);
 
-	while (isdigit((u_char) **layout))
-		(*layout)++;
-	if (**layout != 'x')
-		return (NULL);
-	(*layout)++;
-	while (isdigit((u_char) **layout))
-		(*layout)++;
-	if (**layout != ',')
-		return (NULL);
-	(*layout)++;
-	while (isdigit((u_char) **layout))
-		(*layout)++;
-	if (**layout != ',')
-		return (NULL);
-	(*layout)++;
-	while (isdigit((u_char) **layout))
-		(*layout)++;
-	if (**layout == ',') {
-		saved = *layout;
-		(*layout)++;
-		while (isdigit((u_char) **layout))
-			(*layout)++;
-		if (**layout == 'x')
-			*layout = saved;
-	}
+	(*layout) += nread;
+	nread = 0;
+
+	if (sscanf(*layout, ",%u%n", &id, &nread) == 1)
+		(*layout) += nread;
 
 	lc = layout_create_cell(lcparent);
 	lc->sx = sx;
 	lc->sy = sy;
 	lc->xoff = xoff;
 	lc->yoff = yoff;
+	if (nread > 0)
+		lc->id = id;
 
 	switch (**layout) {
 	case ',':

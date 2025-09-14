@@ -64,6 +64,7 @@ layout_create_cell(struct layout_cell *lcparent)
 	lc->xoff = UINT_MAX;
 	lc->yoff = UINT_MAX;
 
+	lc->id = UINT_MAX;
 	lc->wp = NULL;
 
 	return (lc);

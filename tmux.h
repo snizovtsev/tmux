@@ -1363,6 +1363,8 @@ struct layout_cell {
 	u_int		 xoff;
 	u_int		 yoff;
 
+	u_int		 id;
+
 	struct window_pane *wp;
 	struct layout_cells cells;
 
@@ -3333,6 +3335,8 @@ void		 layout_spread_out(struct window_pane *);
 /* layout-custom.c */
 char		*layout_dump(struct layout_cell *);
 int		 layout_parse(struct window *, const char *, char **);
+void	 layout_assign(struct window_pane **, struct layout_cell *);
+struct layout_cell	*layout_construct(struct layout_cell *, const char **);
 
 /* layout-set.c */
 int		 layout_set_lookup(const char *);
