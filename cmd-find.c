@@ -728,6 +728,7 @@ cmd_find_from_session(struct cmd_find_state *fs, struct session *s, int flags)
 	cmd_find_clear_state(fs, flags);
 
 	fs->s = s;
+	fs->r = s->remote; /* HACK */
 	fs->wl = fs->s->curw;
 	fs->w = fs->wl->window;
 	fs->wp = fs->w->active;

@@ -142,7 +142,7 @@ screen_write_set_client_cb(struct tty_ctx *ttyctx, struct client *c)
 	if (wp->layout_cell == NULL)
 		return (0);
 
-	if (wp->flags & (PANE_REDRAW|PANE_DROP))
+	if (wp->flags & PANE_REDRAW)
 		return (-1);
 	if (c->flags & CLIENT_REDRAWPANES) {
 		/*

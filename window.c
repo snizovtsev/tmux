@@ -984,9 +984,12 @@ window_pane_destroy(struct window_pane *wp)
 		utempter_remove_record(wp->fd);
 		kill(getpid(), SIGCHLD);
 #endif
-		bufferevent_free(wp->event);
 		close(wp->fd);
 	}
+
+	if (wp->event != NULL)
+		bufferevent_free(wp->event);
+
 	if (wp->ictx != NULL)
 		input_free(wp->ictx);
 
@@ -1118,11 +1121,11 @@ window_pane_stop_remote(struct window_pane *wp)
 
 static void
 window_pane_error_callback(__unused struct bufferevent *bufev,
-    __unused short what, void *data)
+    short what, void *data)
 {
 	struct window_pane *wp = data;
 
-	log_debug("%%%u error", wp->id);
+	log_debug("%%%u error: %hu", wp->id, what);
 	wp->flags |= PANE_EXITED;
 
 	if (wp->remote_event != NULL)
@@ -1147,13 +1150,11 @@ window_pane_set_event(struct window_pane *wp)
 }
 
 void
-window_pane_set_event_nofd(struct window_pane *wp, struct bufferevent *bev)
+window_pane_set_remote(struct window_pane *wp)
 {
-	wp->event = bev;
-	bufferevent_setcb(bev, window_pane_read_callback,
+	bufferevent_setcb(wp->event, window_pane_read_callback,
 	    NULL, window_pane_error_callback, wp);
 	wp->ictx = input_init(wp, wp->event->output, &wp->palette);
-	wp->fd = 1; /* HACK: pretend to be alive */
 
 	bufferevent_enable(wp->event, EV_READ|EV_WRITE);
 }

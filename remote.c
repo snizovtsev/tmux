@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "compat/tree.h"
 #include "tmux.h"
 #include "compat/container_of.h"
 
@@ -109,6 +110,7 @@ static void	remote_unlinked_window_add(struct remote *, u_int);
 static void	remote_session_window_changed(struct remote *, u_int, u_int);
 static void	remote_pause(struct remote *, u_int);
 static void	remote_sessions_changed(struct remote *);
+static void	remote_layout_change(struct remote*, u_int, char *, char *, char *);
 static void	remote_exit(struct remote *);
 
 static void
@@ -170,9 +172,9 @@ remote_create(struct bufferevent *bev)
 	r->event = bev;
 	TAILQ_INIT(&r->queries);
 
-	bufferevent_enable(bev, EV_READ);
 	bufferevent_setcb(
 	    bev, remote_read_callback, NULL, remote_error_callback, r);
+	bufferevent_enable(bev, EV_READ);
 
 	RB_INSERT(remotes, &remotes, r);
 
@@ -208,7 +210,29 @@ remote_run(struct remote *r, struct remote_query* q, const char *fmt, ...)
 	evbuffer_add_vprintf(r->event->output, fmt, ap);
 	va_end(ap);
 
+	{
+		FILE *trace;
+		va_start(ap, fmt);
+		trace = fopen("logs/req.log", "a");
+		vfprintf(trace, fmt, ap);
+		va_end(ap);
+		fclose(trace);
+	}
+
 	return (q);
+}
+
+static void
+remote_tx(struct remote *r)
+{
+	{
+		FILE *trace;
+		trace = fopen("logs/req.log", "a");
+		fprintf(trace, "\n");
+		fclose(trace);
+	}
+	bufferevent_write(r->event, "\n", 1);
+	bufferevent_flush(r->event, EV_WRITE, BEV_FLUSH);
 }
 
 /* Move line from an evbuffer into another evbuffer, draining
@@ -393,6 +417,8 @@ remote_dispatch_event(struct remote *r, struct evbuffer *buffer)
 	};
 
 	char		  *string = NULL;
+	char		  *string2 = NULL;
+	char		  *string3 = NULL;
 	u_int		   session;
 	u_int		   pane;
 	u_int		   window;
@@ -459,20 +485,54 @@ remote_dispatch_event(struct remote *r, struct evbuffer *buffer)
 		remote_pause(r, pane);
 	/* %subscription-changed name session-id window-id window-index pane-id ... */
 	else if (event_parse(&ss, 5,
-		     "%%subscription-changed*1[ ]%63ms $%u%*1[ ]@%u%*1[ "
+		     "%%subscription-changed%*1[ ]%63ms%*1[ ]$%u%*1[ ]@%u%*1[ "
 		     "]%u%*1[ ]%%%u%*[^:]%*1[ ]%n",
-		     string, &session, &window, &index, &pane, &ss.mark))
+		     &string, &session, &window, &index, &pane, &ss.mark))
 		; //remote_subscription_changed(
 		    //r, string, session, window, index, pane, ss.rest);
+	/* %layout-change window-id window-layout window-visible-layout window-flags */
+	else if (event_parse(&ss, 4,
+		     "%%layout-change%*1[ ]@%u%*1[ ]%1023ms%*1[ ]%1023ms%*1[ "
+		     "]%63ms",
+		     &window, &string, &string2, &string3))
+		remote_layout_change(r, window, string, string2, string3);
+	/*
+	 *  %continue pane-id
+	 *      The   pane  has  been  continued  after  being  paused  (if  the
+	 *      pause-after flag is set, see refresh-client -A).
+	 *
+	 *  %layout-change     window-id     window-layout     window-visible-layout window-flags
+	 *  	The layout of a window with ID window-id changed.  The new  lay‐
+	 *  	out   is   window-layout.    The   window's  visible  layout  is
+	 *  	window-visible-layout and the window flags are window-flags.
+         *
+	 *  %client-detached client
+         *   	The client has detached.
+         *
+         *  %message message
+         *      A message sent with the display-message command.
+         *
+         *  %config-error error
+         *      An error has happened in a configuration file.
+         *
+	 *  %paste-buffer-changed name
+	 *  	Paste buffer name has been changed.
+         *
+	 *  %paste-buffer-deleted name
+	 *  	Paste buffer name has been deleted.
+	 */
+
 	/* %sessions-changed */
-	/* XXX: %config-error, %message */
 	else if (strncmp(ss.line, "%sessions-changed", 17) == 0)
 		remote_sessions_changed(r);
+	/* FIXME: %exit [reason] */
 	else if (strncmp(ss.line, "%exit", 5) == 0)
 		remote_exit(r);
 
 	free(ss.rest);
 	free(string);
+	free(string2);
+	free(string3);
 }
 
 static void
@@ -504,17 +564,17 @@ remote_input(struct bufferevent *kev, void *ctx)
 	struct remote_query	*q = xcalloc(1, sizeof *q);
 	const char		*keys = EVBUFFER_DATA(kev->input);
 	size_t			 i, n = EVBUFFER_LENGTH(kev->input);
-	char			*hex = xmalloc(3 * n);
+	char			*hex = xmalloc(3 * n + 1);
 
 	for (i = 0; i < n; ++i)
-		sprintf(hex + (i * 3), "%02X ", keys[i]);
+		sprintf(hex + i * 3, "%02X ", keys[i]);
 	hex[3 * n] = '\0';
 	evbuffer_drain(kev->input, n);
 
 	/* q->error = remote_shutdown_because_of_error; */
-	remote_run(r, q, "send-keys -t %%%u -lH %s\n", ictx->pane_id, hex);
+	remote_run(r, q, "send-keys -t %%%u -lH %s", ictx->pane_id, hex);
 	free(hex);
-	bufferevent_flush(r->event, EV_WRITE, BEV_FLUSH);
+	remote_tx(r);
 }
 
 static void
@@ -536,6 +596,43 @@ remote_show_environment(struct remote *r, struct environ *env, int flags)
 	}
 }
 
+static struct client_pane *
+remote_new_pane(struct remote *r, struct window *w, struct window_pane *other,
+    u_int pane_id, u_int hlimit)
+{
+	struct remote_input_ctx *rictx;
+	struct bufferevent	*pipe[2] = {NULL};
+	struct window_pane	*wp = NULL;
+	struct client_pane	*cp;
+
+	if (bufferevent_pair_new(NULL, 0, pipe) < 0)
+		return (NULL);
+
+	if ((wp = window_add_pane(w, other, hlimit, 0)) == NULL)
+		goto err_free_pipe;
+
+	wp->event = pipe[1];
+	window_pane_set_remote(wp);
+
+	rictx = xcalloc(1, sizeof *rictx);
+	rictx->r = r;
+	rictx->pane_id = pane_id;
+	bufferevent_setcb(pipe[0], remote_input, NULL, NULL, rictx);
+	bufferevent_enable(pipe[0], EV_READ);
+
+	cp = xcalloc(1, sizeof *cp);
+	cp->cw.window = pane_id;
+	cp->cw.pane = wp;
+	cp->event = pipe[0];
+
+	return (cp);
+
+err_free_pipe:
+	bufferevent_free(pipe[0]);
+	bufferevent_free(pipe[1]);
+	return (NULL);
+}
+
 static void
 remote_add_panes(struct remote *r, struct remote_bootstrap_ctx *ctx)
 {
@@ -546,13 +643,14 @@ remote_add_panes(struct remote *r, struct remote_bootstrap_ctx *ctx)
 	struct client_window	*cw;
 	struct client_pane	*cp;
 	struct window_pane	*wp = NULL;
-	struct remote_input_ctx *rictx;
-	struct bufferevent	*pipe[2];
 	size_t			 n_read_out;
 	char			*line, *iter;
 	u_int			 window_id, pane_id;
 	u_int			 window_index, pane_index;
-	u_int			 cx, cy, sx, sy, active, hsize, hlimit;
+	u_int			 cx, cy, sx, sy, active, hlimit;
+
+	struct bufferevent	*pipe[2] = {NULL};
+	struct remote_input_ctx *rictx;
 
 	while ((line = evbuffer_peek_string(reply, &n_read_out))) {
 		remote_log(r, "pane: %s", line);
@@ -584,7 +682,13 @@ remote_add_panes(struct remote *r, struct remote_bootstrap_ctx *ctx)
 			w = cw->pane->window;
 		}
 
-		wp = window_add_pane(w, wp, hlimit, 0);
+		cp = remote_new_pane(r, w, wp, pane_id, hlimit);
+		RB_INSERT(client_windows, &ctx->panes, &cp->cw);
+
+		cp->init_cx = cx;
+		cp->init_cy = cy;
+		wp = cp->cw.pane;
+
 		if (cw == NULL)
 			layout_init(w, wp);
 
@@ -597,24 +701,6 @@ remote_add_panes(struct remote *r, struct remote_bootstrap_ctx *ctx)
 			cw->pane = wp;
 			RB_INSERT(client_windows, &ctx->windows, cw);
 		}
-
-		bufferevent_pair_new(NULL, 0, pipe);
-		window_pane_set_event_nofd(wp, pipe[1]);
-
-		rictx = xcalloc(1, sizeof *rictx);
-		rictx->r = r;
-		rictx->pane_id = pane_id;
-		bufferevent_setcb(pipe[0], remote_input, NULL, NULL, rictx);
-		bufferevent_enable(pipe[0], EV_READ);
-
-		cp = xcalloc(1, sizeof *cp);
-		cp->cw.window = pane_id;
-		cp->cw.pane = wp;
-		cp->init_cx = cx;
-		cp->init_cy = cy;
-		cp->event = pipe[0];
-
-		RB_INSERT(client_windows, &ctx->panes, &cp->cw);
 
 		evbuffer_drain(reply, n_read_out);
 	}
@@ -651,7 +737,7 @@ remote_fix_windows(struct remote *r, struct remote_bootstrap_ctx *ctx)
 		cause = NULL;
 		layout_parse(w, layout, &cause);
 		if (cause != NULL) {
-			remote_log(r, "window @%u: bad layout: %s", id, layout);
+			remote_log(r, "window @%u: bad layout: %s: %s", id, cause, layout);
 			free(cause);
 		}
 
@@ -663,6 +749,100 @@ remote_fix_windows(struct remote *r, struct remote_bootstrap_ctx *ctx)
 	}
 }
 
+/* Count the number of available cells in a layout. */
+static void
+remote_fix_panes(struct remote *r, struct window_pane *wp, struct layout_cell *lc)
+{
+	struct client_window	*cw;
+	struct client_pane	*cp;
+	struct layout_cell	*lcchild;
+
+	switch (lc->type) {
+	case LAYOUT_WINDOWPANE:
+		break;
+	case LAYOUT_LEFTRIGHT:
+	case LAYOUT_TOPBOTTOM:
+		TAILQ_FOREACH(lcchild, &lc->cells, entry)
+			remote_fix_panes(r, wp, lcchild);
+		return;
+	default:
+		fatalx("bad layout type");
+	}
+
+	if (lc->id == UINT_MAX)
+		return;
+
+	cw = RB_FIND(client_windows, &r->panes,
+		     &(struct client_window){.window = lc->id});
+
+	if (cw == NULL) {
+		cp = remote_new_pane(r, wp->window, wp, lc->id, 50000);
+		RB_INSERT(client_windows, &r->panes, &cp->cw);
+	} else {
+		cw->pane->flags &= ~PANE_DROP;
+	}
+}
+
+/* Fires when a pane is added or deleted from the split pane. */
+void
+remote_layout_change(struct remote *r, u_int window, char *layout,
+    char *visible_layout, char *flags)
+{
+	struct window	     *w;
+	struct window_pane *wp, *tmpwp;
+	struct client_window *cw;
+	struct layout_cell   *lc;
+	const char *ptr = layout;
+
+	cw = RB_FIND(client_windows, &r->windows,
+		&(struct client_window){.window = window});
+	w = cw->pane->window;
+
+	ptr += 5; // XXX: ignore hash
+	lc = layout_construct(NULL, &ptr);
+	if (lc == NULL) {
+		remote_log(r, "window @%u: bad layout: %s: %s", window, "invalid layout", layout);
+	}
+
+	TAILQ_FOREACH(wp, &w->panes, entry) {
+		wp->flags |= PANE_DROP;
+	}
+
+	remote_fix_panes(r, cw->pane, lc);
+
+	TAILQ_FOREACH_SAFE(wp, &w->panes, entry, tmpwp) {
+		if (wp->flags & PANE_DROP) {
+			RB_FOREACH(cw, client_windows, &r->panes) {
+				if (cw->pane == wp) {
+					RB_REMOVE(client_windows, &r->panes, cw);
+					break;
+				}
+			}
+			layout_destroy_cell(w, wp->layout_cell, &w->layout_root);
+			window_remove_pane(w, wp);
+		}
+	}
+
+	/* Resize to the layout size. */
+	window_resize(w, lc->sx, lc->sy, -1, -1);
+
+	/* Destroy the old layout and swap to the new. */
+	layout_free_cell(w->layout_root);
+	w->layout_root = lc;
+
+	/* Assign the panes into the cells. */
+	wp = TAILQ_FIRST(&w->panes);
+	layout_assign(&wp, lc);
+
+	/* Update pane offsets and sizes. */
+	layout_fix_offsets(w);
+	layout_fix_panes(w, NULL);
+	recalculate_sizes();
+	server_redraw_session(r->session);
+
+	//layout_free_cell(lc);
+}
+
 static void
 remote_populate_history(struct remote *r, struct remote_bootstrap_ctx *ctx)
 {
@@ -670,14 +850,18 @@ remote_populate_history(struct remote *r, struct remote_bootstrap_ctx *ctx)
 	struct evbuffer	   *history = evbuffer_new();
 	struct client_pane *cp = container_of(ctx->cw, struct client_pane, cw);
 	struct window_pane *wp = ctx->cw->pane;
-	struct grid *tmp;
-	size_t		    len, n_read_out;
+	struct grid	   *tmp;
+	int		    len;
+	size_t		    n_read_out;
 	char		   *text;
 
 	remote_log(r, "populate_history %%%u", ctx->cw->window);
 
 	while ((text = evbuffer_peek_string(reply, &n_read_out))) {
 		len = strunvis(text, text); // XXX: check error
+		if (len < 0)
+			abort();
+
 		evbuffer_remove_buffer(reply, history, len);
 		evbuffer_drain(reply, n_read_out - len);
 		if (evbuffer_get_length(reply))
@@ -703,7 +887,6 @@ remote_populate_history(struct remote *r, struct remote_bootstrap_ctx *ctx)
 
 	evbuffer_free(history);
 
-
 	if (cp->alt) {
 		ctx->cw = RB_NEXT(client_windows, &r->panes, ctx->cw);
 		wp->base.cx = cp->init_cx;
@@ -721,14 +904,14 @@ remote_request_history(struct remote *r, struct remote_query *q, struct remote_b
 	ctx->cw = RB_MIN(client_windows, &ctx->panes);
 	RB_FOREACH(cw, client_windows, &ctx->panes) {
 		remote_run(r, q,
-		    "capture-pane -peqCJN -S -%u -t %%%u ;",
+		    "capture-pane -peqCJN -S -%u -t %%%u ; ",
 		    screen_hlimit(&cw->pane->base), cw->window);
 		remote_run(r, q,
-		    "capture-pane -apeqCJN -S -%u -t %%%u ;",
+		    "capture-pane -apeqCJN -S -%u -t %%%u ; ",
 		    screen_hlimit(&cw->pane->base), cw->window);
 	}
-	bufferevent_write(r->event, "\n", 1);
-	bufferevent_flush(r->event, EV_WRITE, BEV_FLUSH);
+	if (!RB_EMPTY(&ctx->panes))
+		remote_tx(r);
 }
 
 static void
@@ -791,8 +974,14 @@ remote_session_changed(struct remote *r, u_int session_id, char *name)
 {
 	struct remote_bootstrap_ctx *ctx;
 
+	remote_log(r, "session attached: %s", name);
+
 	if (r->session)
 		session_destroy(r->session, 1, __func__);
+
+	// HACK
+	if (!TAILQ_EMPTY(&r->queries))
+		return;
 
 	ctx = xcalloc(1, sizeof *ctx);
 	ctx->q.command = "bootstrap";
@@ -840,8 +1029,7 @@ remote_session_changed(struct remote *r, u_int session_id, char *name)
 	*/
 
 	/* show-options -g */
-	bufferevent_write(r->event, "\n", 1);
-	bufferevent_flush(r->event, EV_WRITE, BEV_FLUSH);
+	remote_tx(r);
 }
 
 /* Replaces %output when flow control is enabled. */
@@ -1034,11 +1222,14 @@ remote_notify_window_pane_changed(struct remote *r, struct window *w)
 			break;
 	}
 
+	if (cw == NULL) /* XXX: client-created pane? */
+		return;
+
 	remote_log(r, "select-pane -t %%%u", cw->window);
 
 	q = xcalloc(1, sizeof *q);
-	remote_run(r, q, "select-pane -t %%%u\n", cw->window);
-	bufferevent_flush(r->event, EV_WRITE, BEV_FLUSH);
+	remote_run(r, q, "select-pane -t %%%u", cw->window);
+	remote_tx(r);
 }
 
 void
@@ -1053,9 +1244,9 @@ remote_notify_session_window_changed(struct remote *r)
 	}
 
 	q = xcalloc(1, sizeof *q);
-	remote_run(r, q, "select-window -t @%u\n", cw->window);
-	remote_log(r, "select-window -t @%u", cw->window);
-	bufferevent_flush(r->event, EV_WRITE, BEV_FLUSH);
+	remote_run(r, q, "select-window -t @%u", cw->window);
+	//remote_log(r, "select-window -t @%u", cw->window);
+	remote_tx(r);
 }
 
 void
@@ -1066,7 +1257,8 @@ remote_notify_window_layout_changed(struct remote *r, struct window *w)
 static void
 remote_exit(struct remote *r)
 {
-	session_destroy(r->session, 1, __func__);
+	if (r->session != NULL)
+		session_destroy(r->session, 1, __func__);
 	r->session = NULL;
 }
 

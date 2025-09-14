@@ -3219,7 +3219,7 @@ struct window	*window_find_by_id(u_int);
 void		 window_update_activity(struct window *);
 struct window	*window_create(u_int, u_int, u_int, u_int);
 void		 window_pane_set_event(struct window_pane *);
-void		 window_pane_set_event_nofd(struct window_pane *wp, struct bufferevent *bev);
+void		 window_pane_set_remote(struct window_pane *);
 struct window_pane *window_get_active_at(struct window *, u_int, u_int);
 struct window_pane *window_find_string(struct window *, const char *);
 int		 window_has_pane(struct window *, struct window_pane *);
