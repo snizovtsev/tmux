@@ -46,9 +46,12 @@ struct remote {
 
 struct client_pane {
 	struct client_window cw;
+	struct remote	    *r;
 	struct bufferevent  *event;
-	u_int init_cx, init_cy;
-	u_int alt;
+	u_int		     init_cx;
+	u_int		     init_cy;
+	u_int		     alt;
+	u_int		     pane_id;
 };
 
 struct event_parse_ctx {
@@ -68,12 +71,6 @@ struct remote_bootstrap_ctx {
 	struct client_windows  windows;
 	struct client_windows  panes;
 	struct client_window  *cw;
-};
-
-struct remote_input_ctx {
-	struct remote	   *r;
-	struct bufferevent *event;
-	uint32_t	    pane_id;
 };
 
 /* Helper functions. */
@@ -559,8 +556,8 @@ remote_output(struct remote *r, u_int pane_id, char *data)
 static void
 remote_input(struct bufferevent *kev, void *ctx)
 {
-	struct remote_input_ctx *ictx = ctx;
-	struct remote		*r = ictx->r;
+	struct client_pane	*cp = ctx;
+	struct remote		*r = cp->r;
 	struct remote_query	*q = xcalloc(1, sizeof *q);
 	const char		*keys = EVBUFFER_DATA(kev->input);
 	size_t			 i, n = EVBUFFER_LENGTH(kev->input);
@@ -572,7 +569,7 @@ remote_input(struct bufferevent *kev, void *ctx)
 	evbuffer_drain(kev->input, n);
 
 	/* q->error = remote_shutdown_because_of_error; */
-	remote_run(r, q, "send-keys -t %%%u -lH %s", ictx->pane_id, hex);
+	remote_run(r, q, "send-keys -t %%%u -lH %s", cp->pane_id, hex);
 	free(hex);
 	remote_tx(r);
 }
@@ -600,7 +597,6 @@ static struct client_pane *
 remote_new_pane(struct remote *r, struct window *w, struct window_pane *other,
     u_int pane_id, u_int hlimit)
 {
-	struct remote_input_ctx *rictx;
 	struct bufferevent	*pipe[2] = {NULL};
 	struct window_pane	*wp = NULL;
 	struct client_pane	*cp;
@@ -614,16 +610,15 @@ remote_new_pane(struct remote *r, struct window *w, struct window_pane *other,
 	wp->event = pipe[1];
 	window_pane_set_remote(wp);
 
-	rictx = xcalloc(1, sizeof *rictx);
-	rictx->r = r;
-	rictx->pane_id = pane_id;
-	bufferevent_setcb(pipe[0], remote_input, NULL, NULL, rictx);
-	bufferevent_enable(pipe[0], EV_READ);
-
 	cp = xcalloc(1, sizeof *cp);
+	cp->r = r;
+	cp->pane_id = pane_id;
 	cp->cw.window = pane_id;
 	cp->cw.pane = wp;
 	cp->event = pipe[0];
+
+	bufferevent_setcb(pipe[0], remote_input, NULL, NULL, cp);
+	bufferevent_enable(pipe[0], EV_READ);
 
 	return (cp);
 
@@ -648,9 +643,6 @@ remote_add_panes(struct remote *r, struct remote_bootstrap_ctx *ctx)
 	u_int			 window_id, pane_id;
 	u_int			 window_index, pane_index;
 	u_int			 cx, cy, sx, sy, active, hlimit;
-
-	struct bufferevent	*pipe[2] = {NULL};
-	struct remote_input_ctx *rictx;
 
 	while ((line = evbuffer_peek_string(reply, &n_read_out))) {
 		remote_log(r, "pane: %s", line);
@@ -1034,7 +1026,7 @@ remote_session_changed(struct remote *r, u_int session_id, char *name)
 
 /* Replaces %output when flow control is enabled. */
 static void
-remote_extended_output(struct remote *r, u_int, uint64_t, char *)
+remote_extended_output(struct remote *r, u_int pane_id, uint64_t age, char *value)
 {
 }
 
@@ -1046,14 +1038,30 @@ remote_pane_mode_changed(struct remote *r, u_int pane_id)
 
 /* A window was renamed in another session. */
 static void
-remote_unlinked_window_renamed(struct remote *r, u_int window_id, char *new_name)
+remote_unlinked_window_renamed(struct remote *r, u_int window_id, char *newname)
 {
 }
 
 /* A session was renamed. */
 static void
-remote_session_renamed(struct remote *r, u_int session_id, char *new_name)
+remote_session_renamed(struct remote *r, u_int session_id, char *newname)
 {
+	struct session *s = r->session;
+
+	if (s == NULL || r->session_id != session_id)
+		return;
+
+	if (strcmp(newname, s->name) == 0)
+		return;
+	if (session_find(newname) != NULL)
+		return;
+
+	RB_REMOVE(sessions, &sessions, s);
+	free(s->name);
+	s->name = strdup(newname);
+	RB_INSERT(sessions, &sessions, s);
+
+	server_status_session(s);
 }
 
 /* Another client's attached session was changed. */
@@ -1225,8 +1233,6 @@ remote_notify_window_pane_changed(struct remote *r, struct window *w)
 	if (cw == NULL) /* XXX: client-created pane? */
 		return;
 
-	remote_log(r, "select-pane -t %%%u", cw->window);
-
 	q = xcalloc(1, sizeof *q);
 	remote_run(r, q, "select-pane -t %%%u", cw->window);
 	remote_tx(r);
@@ -1245,13 +1251,32 @@ remote_notify_session_window_changed(struct remote *r)
 
 	q = xcalloc(1, sizeof *q);
 	remote_run(r, q, "select-window -t @%u", cw->window);
-	//remote_log(r, "select-window -t @%u", cw->window);
 	remote_tx(r);
 }
 
 void
 remote_notify_window_layout_changed(struct remote *r, struct window *w)
 {
+	struct remote_query  *q;
+	struct client_window *cw = NULL;
+	char* layout;
+
+	if (r->session == NULL)
+		return;
+
+	RB_FOREACH(cw, client_windows, &r->windows) {
+		if (cw->pane->window == r->session->curw->window)
+			break;
+	}
+
+	if (w == NULL)
+		return;
+
+	q = xcalloc(1, sizeof *q);
+	layout = layout_dump(w->layout_root);
+	remote_run(r, q, "select-layout -t @%u \"%s\"", cw->window, layout);
+	free(layout);
+	remote_tx(r);
 }
 
 static void
